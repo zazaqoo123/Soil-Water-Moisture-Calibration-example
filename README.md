@@ -10,3 +10,5 @@ For each file submitted in this repository:
 -Correlation_Matrix_PTFs_Yanco.xlsx is the correlation summary matrix for each PTFs.
 -Shapefile folder contains the clipped shapefiles for Yanco sites
 -Yanco probes folder contains the raw soil moisture probe data downloaded from OzNet API database
+
+This work was funded by the Grains Research & Development Corporation in a project called SoilWaterNow: Soil water nowcasting for the grains industry. Grant ID: UOS2001-002RTX.
