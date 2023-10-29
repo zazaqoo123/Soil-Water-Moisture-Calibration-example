@@ -1,0 +1,431 @@
+---
+title: "Soil Moisture Probe Calibration"
+author: "Long"
+date: "2023-10-20"
+output:
+  html_document:
+    theme: cerulean
+---
+
+This R workflow provides a demonstration of soil water calibration using two version of the SLGA data (Old and New). The calibration is performed with three distinct Pedo-transfer Functions (PTFs). We have employed a set of PTFs originally developed at the USYD and referred to as 'USYD JOSE' (Padarian, 2014), and have also conducted a comparative analysis with PTFs developed by the CSIRO (Somarathna and Searle, 2022). In addition, the soil water layers from Water Product 7 (WP7), where we estimated and mapped the drained upper limit (DUL) and critical lower limit (CLL) at each sampling location, with a spatial resolution of 90 meters were also introduced. The soil attributes employed for calibration purposes encompass soil composition, including sand, silt, and clay content, as well as bulk density and organic carbon. In this demonstration, 'PTF 1' signifies the CSIRO PTF, 'PTF 2' corresponds to the USYD JOSE PTF, and 'PTF 3' is associated with the CSIRO 90-meter product extraction, Sensor range is classified as Sensor 1 (0-30cm); Sensor 2 (30-60cm); Sensor 3 (60-100cm).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#Package Loading
+library(dplyr)
+library(forecast)
+library(here)
+library(ggplot2)
+library(leaflet)
+library(raster)
+library(readr)
+library(rgdal)
+library(rgeos)
+library(sf)
+library(sp)
+library(tidyverse)
+library(tidyr)
+library(tseries)
+source("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/Accuracy.R")
+```
+
+##Part 1. OzNet API Download
+
+```{r}
+#Access data generation from the soil probe analysis and calibration
+get_available_data <- function(){
+  readRDS(file = here::here("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/available_data.rds"))
+}
+
+check_SiteID_available <- function(SiteID) {
+  available_data <- readRDS(file = here::here("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/available_data.rds"))
+  SiteID %in% available_data$SiteID
+}
+#' read_data
+#'
+#' @param siteID Name of the soil moisture probe, e.g. "OzNet_y1"
+#'
+#' @return Returns a dataframe of moisture and calibrated values(i.e rescaled column) for each depth
+#' @export
+#'
+#' @examples
+#' probe_data <- read_data('OzNet_y1')
+read_data <- function(site) {
+  if (check_SiteID_available(site) == TRUE) {
+  all_data <- readRDS(here::here("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/results.rds"))
+  subset <- all_data %>% filter(SiteID == site) %>% pull(data)
+  subset <- subset[[1]]
+  return(subset)
+  }
+  else {
+   # print("Error : Site Not available -Option must be within available_data.rds")
+    return(stop(paste0("Error : Site",SiteID," Not available. Option must be within available_data.rds")))
+  }
+
+}
+#' get_csvdata
+#'
+#' @param siteID Name of the soil moisture probe, e.g. "OzNet_y1"
+#'
+#' @return Returns a csv saved in the current working directory, whose name starts with siteID
+#' @export
+#'
+#' @examples
+#' get_csvdata('Cosmoz_10')
+get_csvdata <- function(SiteID) {
+  read_data(SiteID) %>% write_csv(file = here::here(paste0(SiteID,"_data.csv")))
+}
+#' get_highlevel_probedata
+#'
+#' @return Returns a dataframe of ProbeIDs that have are available, and high level summary data
+#' @export
+#'
+#' @examples
+#' available_data <- get_highlevel_probedata()
+get_highlevel_probedata <- function(){
+  available_data <- readRDS(file = here::here("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/available_data.rds"))
+  return(available_data)
+}
+
+available_data <- get_highlevel_probedata()
+
+probe_data <- read_data('OzNet_y1') #Repeat for all avaiable probes from the network
+
+write.csv(probe_data, "C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/OzNet/Yanco/OzNet_y1.csv", row.names = FALSE)
+
+```
+
+##Part 2. Probe Network Mapping (OzNet_Yanco as an example)
+
+```{r}
+#Load shapefile
+Yanco <- st_read("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/OzNet/Yanco/Shapefile")
+
+#Load the CSV file with sampling sites
+Probe_Y <- read.csv("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/OzNet/Yanco/Probe_Yanco.csv")
+
+#CRS adjustment
+Probe_Y$Lon <- as.numeric(as.character(Probe_Y$Longitude))
+Probe_Y$Lat <- as.numeric(as.character(Probe_Y$Latitude))
+OzNet_Probes <- SpatialPoints(Probe_Y[, c("Lon", "Lat")])
+proj4string(OzNet_Probes) <- CRS("+proj=longlat +datum=WGS84")
+OzNet_Probes <- spTransform(OzNet_Probes,CRS("+proj=longlat +datum=WGS84"))
+OzNet_Probes <- as.data.frame(OzNet_Probes, long = Longitude, lat = Latitude)
+
+#Create a leaflet map
+map <- leaflet() %>%
+  addProviderTiles("Esri.WorldImagery", group = "Google Earth-like Basemap") %>%
+  addPolygons(data = Yanco, color = "blue", fillOpacity = 0.4, group = "Yanco Shapefile")
+
+#Add sampling sites to the map
+map <- map %>%
+  addCircleMarkers(
+    data = Probe_Y,
+    lat = ~Latitude,  # Replace with the actual column name in your CSV file
+    lng = ~Longitude, # Replace with the actual column name in your CSV file
+    color = "red",    # Customize marker color
+    radius = 3        # Customize marker size
+  )
+
+#Display the map
+map
+```
+
+##Part 3. PTFs Comparison & PAWC Calculation
+#Input SLGA data and Extraction
+
+```{r}
+#SLGA Old extraction
+soil.list1 <- list.files(path="C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/SLGAold", pattern =".tif", full.names=TRUE)
+soil.stack1 <- raster::stack(soil.list1)
+
+soilSLGA1 <- raster::extract(soil.stack1, OzNet_Probes)
+soilSLGA1 <- as.data.frame(soilSLGA1)
+
+names(soilSLGA1)[1:30]<-c( "BDW_005","BDW_015","BDW_030","BDW_060","BDW_100","BDW_200",
+                          
+                          "CLY_005","CLY_015","CLY_030","CLY_060","CLY_100","CLY_200",
+                          
+                          "SLT_005","SLT_015","SLT_030","SLT_060","SLT_100","SLT_200",
+                          
+                          "SND_005","SND_015","SND_030","SND_060","SND_100","SND_200",
+                          
+                          "SOC_005","SOC_015","SOC_030","SOC_060","SOC_100","SOC_200")
+
+str(soilSLGA1)
+
+#SLGA new extraction
+soil.list2 <- list.files(path="C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/SLGAnew", pattern =".tif", full.names=TRUE)
+soil.stack2 <- raster::stack(soil.list2)
+
+soilSLGA2 <- raster::extract(soil.stack2, OzNet_Probes)
+soilSLGA2 <- as.data.frame(soilSLGA2)
+
+names(soilSLGA2)[1:30]<-c( "BDW_005","BDW_015","BDW_030","BDW_060","BDW_100","BDW_200",
+                          
+                          "CLY_005","CLY_015","CLY_030","CLY_060","CLY_100","CLY_200",
+                          
+                          "SLT_005","SLT_015","SLT_030","SLT_060","SLT_100","SLT_200",
+                          
+                          "SND_005","SND_015","SND_030","SND_060","SND_100","SND_200",
+                          
+                          "SOC_005","SOC_015","SOC_030","SOC_060","SOC_100","SOC_200")
+
+str(soilSLGA2)
+```
+
+#Read Soil Moisture Data
+
+```{r}
+OzNet_Y <- read.csv("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/OzNet/Yanco/Yanco_SM.csv")
+str(OzNet_Y)
+
+#Back transform reported SM to Normalized Raw Counts
+Rawcounts <- function(Theta,CoefA=0.232,ExpB=0.41,ConC=-0.021){
+  RC <- CoefA*Theta^(ExpB)+ConC
+  return(RC)
+}
+OzNet_Y$NRC <- Rawcounts(Theta = OzNet_Y$SM,CoefA = 0.1957,ExpB = 0.404,ConC = 0.02852)
+OzNet_Y$defaultCal <- (((Rawcounts(Theta = OzNet_Y$SM,CoefA = 0.1957,ExpB = 0.404,ConC = 0.02852)-(-0.021))/0.232)^(1/0.41))/100
+
+#Identify Maxima and minima 
+SensorRange <- OzNet_Y %>% group_by(Sensor,Site_ID) %>%
+  summarise(max=max(defaultCal),min=min(defaultCal))
+
+OzNet_Y <- left_join(OzNet_Y,SensorRange)
+```
+
+#SM Stretch PTF 1 - CSIRO PTF
+
+```{r}
+soil_data <- read.csv("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/OzNet/Yanco/SoilSLGA_Y.csv")
+
+#Old SLGA Data
+StretchPars1_O <- function(soil_data){
+  theta_dul1_O = ((48.98 - 21.86 * soil_data$BDW_1 + 0.36 * soil_data$CLY_1 - 0.06 * soil_data$SND_1 - 0.19 * sqrt(soil_data$SLT_1) + 2.90 * sqrt(soil_data$SOC_1))/100)
+  
+  theta_pwp1_O<- ((17.40 - 10.05 * soil_data$BDW_1 + 0.34 * soil_data$CLY_1 - 0.02 * soil_data$SND_1 + 0.18 * soil_data$SLT_1)/100)
+  
+  return(cbind(as.character(soil_data$Site_ID),soil_data$Sensor,theta_dul1_O,theta_pwp1_O))
+}
+
+SLGA_Bucketbounds1_O <- as.data.frame(StretchPars1_O(soil_data))
+names(SLGA_Bucketbounds1_O) <- c("Site_ID","Sensor","SLGA_DUL1_O","SLGA_PWP1_O")
+str(SLGA_Bucketbounds1_O)
+
+#New SLGA Data
+StretchPars1_N <- function(soil_data){
+  theta_dul1_N = ((48.98 - 21.86 * soil_data$BDW_2 + 0.36 * soil_data$CLY_2 - 0.06 * soil_data$SND_2 - 0.19 * sqrt(soil_data$SLT_2) + 2.90 * sqrt(soil_data$SOC_2))/100)
+  
+  theta_pwp1_N<- ((17.40 - 10.05 * soil_data$BDW_2 + 0.34 * soil_data$CLY_2 - 0.02 * soil_data$SND_2 + 0.18 * soil_data$SLT_2)/100)
+  
+  return(cbind(as.character(soil_data$Site_ID),soil_data$Sensor,theta_dul1_N,theta_pwp1_N))
+}
+
+SLGA_Bucketbounds1_N <- as.data.frame(StretchPars1_N(soil_data))
+names(SLGA_Bucketbounds1_N) <- c("Site_ID","Sensor","SLGA_DUL1_N","SLGA_PWP1_N")
+str(SLGA_Bucketbounds1_N)
+```
+
+#SM Stretch PTF 2 - USYD JOSE PTF
+
+```{r}
+#Old SLGA Data
+StretchPars2_O <- function(soil_data){
+  theta_dul2_O = 0.4795 - 3.873 * 10^-5 * soil_data$SND_1 ^2 - 6.701 * 10^-7 * soil_data$CLY_1 ^2 * soil_data$SND_1
+  
+  theta_pwp2_O<- -0.1554 - 0.7221 * tanh(0.5 * (-0.9705 - 0.8529 * soil_data$BDW_1 - 0.00827 *
+                                               soil_data$CLY_1 + 0.01994 * soil_data$SND_1))  + 0.1325 * tanh(0.5 * (3.71 - 3.19 * soil_data$BDW_1 
+                                                                                                                   + 0.01205 * soil_data$CLY_1 + 0.01617 * soil_data$SND_1)) + 0.1720 * tanh(0.5 * (-3.94 - 0.5067 * soil_data$BDW_1
+                                                                                                                                                                                                  + 0.02158 * soil_data$CLY_1 + 0.04978 * soil_data$SND_1))
+  return(cbind(as.character(soil_data$Site_ID),soil_data$Sensor,theta_dul2_O,theta_pwp2_O))
+}
+
+SLGA_Bucketbounds2_O <- as.data.frame(StretchPars2_O(soil_data))
+names(SLGA_Bucketbounds2_O) <- c("Site_ID","Sensor","SLGA_DUL2_O","SLGA_PWP2_O")
+str(SLGA_Bucketbounds2_O)
+
+#New SLGA Data
+StretchPars2_N <- function(soil_data){
+  theta_dul2_N = 0.4795 - 3.873 * 10^-5 * soil_data$SND_2 ^2 - 6.701 * 10^-7 * soil_data$CLY_2 ^2 * soil_data$SND_2
+  
+  theta_pwp2_N<- -0.1554 - 0.7221 * tanh(0.5 * (-0.9705 - 0.8529 * soil_data$BDW_2 - 0.00827 *
+                                               soil_data$CLY_2 + 0.01994 * soil_data$SND_2))  + 0.1325 * tanh(0.5 * (3.71 - 3.19 * soil_data$BDW_2 
+                                                                                                                   + 0.01205 * soil_data$CLY_2 + 0.01617 * soil_data$SND_2)) + 0.1720 * tanh(0.5 * (-3.94 - 0.5067 * soil_data$BDW_2
+                                                                                                                                                                                                  + 0.02158 * soil_data$CLY_2 + 0.04978 * soil_data$SND_2))
+  return(cbind(as.character(soil_data$Site_ID),soil_data$Sensor,theta_dul2_N,theta_pwp2_N))
+}
+
+SLGA_Bucketbounds2_N <- as.data.frame(StretchPars2_N(soil_data))
+names(SLGA_Bucketbounds2_N) <- c("Site_ID","Sensor","SLGA_DUL2_N","SLGA_PWP2_N")
+str(SLGA_Bucketbounds2_N)
+```
+
+#SM Stretch PTF 3 - CSIRO 90M product
+
+```{r}
+StretchPars3 <- list.files(path="C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/CSIRO90m", pattern =".tif", full.names=TRUE)
+StretchPars3 <- raster::stack(soil.list2)
+
+soilCSIRO <- raster::extract(StretchPars3, OzNet_Probes)
+soilCSIRO <- as.data.frame(soilCSIRO)
+
+#Adapt to DUL&CLL layer names
+names(soilCSIRO)[1:12]<-c( "CLL_005","CLL_015","CLL_030","CLL_060","CLL_100","CLL_200",
+                           
+                           "DUL_005","DUL_015","DUL_030","DUL_060","DUL_100","DUL_200")
+
+DUL_005 <- (soilCSIRO$DUL_005)/100
+DUL_015 <- (soilCSIRO$DUL_015)/100
+DUL_030 <- (soilCSIRO$DUL_030)/100
+DUL_060 <- (soilCSIRO$DUL_060)/100
+DUL_100 <- (soilCSIRO$DUL_100)/100
+DUL_200 <- (soilCSIRO$DUL_200)/100
+PWP_005 <- (soilCSIRO$CLL_005)/100
+PWP_015 <- (soilCSIRO$CLL_015)/100
+PWP_030 <- (soilCSIRO$CLL_030)/100
+PWP_060 <- (soilCSIRO$CLL_060)/100
+PWP_100 <- (soilCSIRO$CLL_100)/100
+PWP_200 <- (soilCSIRO$CLL_200)/100
+
+SLGA_Bucketbounds3 <- cbind(DUL_005, DUL_015, DUL_030, DUL_060, DUL_100, DUL_200,
+                            PWP_005, PWP_015, PWP_030, PWP_060, PWP_100, PWP_200)
+
+SLGA_Bucketbounds3 <- as.data.frame(SLGA_Bucketbounds3)
+str(SLGA_Bucketbounds3)
+```
+
+## Read in probe timeseries
+
+```{r}
+LinNormDF <- read.csv("C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/OZnet/Yanco/OzNet_Y.csv")
+LinNormDF$SM <- LinNormDF$SM/100
+str(LinNormDF)
+
+#Create LN function
+linnorm <- function(ProbeMax,ProbeMin,ProbeTheta,DUL,PWP){
+  Theta <- ((ProbeTheta-ProbeMin)/(ProbeMax-ProbeMin))*(DUL-PWP)+PWP
+  return(Theta)
+}
+
+#Linear normalisation
+LinNormDF <- na.omit(LinNormDF)
+LinNormDF$Date <- as.Date(LinNormDF$Date)
+LinNormDF$Sensor <- as.factor(LinNormDF$Sensor)
+LinNormDF$Site_ID <- as.numeric(LinNormDF$Site_ID)
+
+LinNormDF$SLGANorm1_O <- linnorm(ProbeMax = LinNormDF$Max,
+                               ProbeMin = LinNormDF$Min,
+                               ProbeTheta = LinNormDF$defaultCal,
+                               DUL=LinNormDF$DUL1_O,
+                               PWP=LinNormDF$PWP1_O)
+
+LinNormDF$SLGANorm1_N <- linnorm(ProbeMax = LinNormDF$Max,
+                               ProbeMin = LinNormDF$Min,
+                               ProbeTheta = LinNormDF$defaultCal,
+                               DUL=LinNormDF$DUL1_N,
+                               PWP=LinNormDF$PWP1_N)
+
+LinNormDF$SLGANorm2_O <- linnorm(ProbeMax = LinNormDF$Max,
+                               ProbeMin = LinNormDF$Min,
+                               ProbeTheta = LinNormDF$defaultCal,
+                               DUL=LinNormDF$DUL2_O,
+                               PWP=LinNormDF$PWP2_O)
+
+LinNormDF$SLGANorm2_N <- linnorm(ProbeMax = LinNormDF$Max,
+                               ProbeMin = LinNormDF$Min,
+                               ProbeTheta = LinNormDF$defaultCal,
+                               DUL=LinNormDF$DUL2_N,
+                               PWP=LinNormDF$PWP2_N)
+
+LinNormDF$SLGANorm3 <- linnorm(ProbeMax = LinNormDF$Max,
+                               ProbeMin = LinNormDF$Min,
+                               ProbeTheta = LinNormDF$defaultCal,
+                               DUL=LinNormDF$DUL_3,
+                               PWP=LinNormDF$PWP_3)
+
+#Time-series Plot
+ggplot(data=LinNormDF,aes(x=Date,y=defaultCal,colour=Sensor))+
+  geom_path()+
+  facet_wrap(vars(Site_ID))
+
+SLGA_LNTS <- ggplot(data=LinNormDF,aes(x=Date,y=SLGANorm1_O,colour=Sensor))+
+  geom_path()+
+  facet_wrap(vars(Site_ID))+
+  geom_point(data=LinNormDF,aes(x=Date,y=SM,colour=Sensor))+
+  labs(x="Date",
+       y= bquote("SLGA Linear Normalisation"*theta[V]),
+       title= "SLGA Linear Normalisation Timeseries")+
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y")+
+  theme(axis.text.x = element_text(size=10)) #Repeat for SLGA2 and 3
+print(SLGA_LNTS)
+
+```
+
+##LN Plot
+
+```{r}
+LinNormDF$Sensor <- as.numeric(as.character(LinNormDF$Sensor))
+LNormOBSPRED <- LinNormDF
+LNormOBSPRED <- na.omit(LNormOBSPRED)
+LNormOBSPRED$Site_ID <- as.factor(as.numeric(as.factor(LNormOBSPRED$Site_ID)))
+str(LNormOBSPRED)
+
+write.csv(LNormOBSPRED, "C:/USYD_SoilMoisture_Calibration/Soil Prob calibration project/USYD_Calibration_2023/OZnet/Yanco/OzNet_Yanco_calibrated.csv", row.names = FALSE)
+
+#Correlation Test
+#PTF1 SLGA Old
+SLGANormFit1 <- LNormOBSPRED %>% group_by(Site_ID) %>% summarise(ME=accuracy(SM,SLGANorm1_O)[1],
+                                                                RMSE=accuracy(SM,SLGANorm1_O)[2],
+                                                                R2=accuracy(SM,SLGANorm1_O)[3],
+                                                                LCCC=accuracy(SM,SLGANorm1_O)[4])
+
+SLGAnormGoof1 <- accuracy(actual = LNormOBSPRED$SM,predict = LNormOBSPRED$SLGANorm1_O)
+
+#PTF1 SLGA New
+SLGANormFit2 <- LNormOBSPRED %>% group_by(Site_ID) %>% summarise(ME=accuracy(SM,SLGANorm1_N)[1],
+                                                                RMSE=accuracy(SM,SLGANorm1_N)[2],
+                                                                R2=accuracy(SM,SLGANorm1_N)[3],
+                                                                LCCC=accuracy(SM,SLGANorm1_N)[4])
+
+SLGAnormGoof2 <- accuracy(actual = LNormOBSPRED$SM,predict = LNormOBSPRED$SLGANorm1_N)
+
+#PTF2 SLGA Old
+SLGANormFit3 <- LNormOBSPRED %>% group_by(Site_ID) %>% summarise(ME=accuracy(SM,SLGANorm2_O)[1],
+                                                                RMSE=accuracy(SM,SLGANorm2_O)[2],
+                                                                R2=accuracy(SM,SLGANorm2_O)[3],
+                                                                LCCC=accuracy(SM,SLGANorm2_O)[4])
+
+SLGAnormGoof3 <- accuracy(actual = LNormOBSPRED$SM,predict = LNormOBSPRED$SLGANorm2_O)
+
+##PTF2 SLGA New
+SLGANormFit4 <- LNormOBSPRED %>% group_by(Site_ID) %>% summarise(ME=accuracy(SM,SLGANorm2_N)[1],
+                                                                RMSE=accuracy(SM,SLGANorm2_N)[2],
+                                                                R2=accuracy(SM,SLGANorm2_N)[3],
+                                                                LCCC=accuracy(SM,SLGANorm2_N)[4])
+
+SLGAnormGoof4 <- accuracy(actual = LNormOBSPRED$SM,predict = LNormOBSPRED$SLGANorm2_N)
+
+#PTF3 SLGA
+SLGANormFit5 <- LNormOBSPRED %>% group_by(Site_ID) %>% summarise(ME=accuracy(SM,SLGANorm3)[1],
+                                                                RMSE=accuracy(SM,SLGANorm3)[2],
+                                                                R2=accuracy(SM,SLGANorm3)[3],
+                                                                LCCC=accuracy(SM,SLGANorm3)[4])
+
+SLGAnormGoof5 <- accuracy(actual = LNormOBSPRED$SM,predict = LNormOBSPRED$SLGANorm3)
+
+#Plotting
+SLGALN_Goof_plot <- ggplot(data=LNormOBSPRED,aes(x=SM,y=SLGANorm1_O,colour=Site_ID))+
+  geom_point()+
+  geom_abline()+xlim(0,0.5)+ylim(0,0.5)+geom_text(colour="black",aes(x=-Inf, y=Inf, hjust=0, vjust=1,
+                                                                     label=paste(" R2 =", formatC(SLGAnormGoof1[3],digits = 3,format="f"), "\n",
+                                                                                 "RMSE =", format(SLGAnormGoof1[2],digits = 3,format="f"), "\n")))+
+  labs(x= bquote("Observed Moisture "*theta[V]),
+       y= bquote("SLGA Data Linear Normalised Moisture "*theta[V]),
+       title= "SLGA Data Linear Normalised Moisture All Sites",
+       legend="Site No")
+
+print(SLGALN_Goof_plot) #Repeat for SLGA2 and 3
