@@ -1,1 +1,12 @@
 # Soil-Water-Moisture-Calibration-example
+
+This repository contains an example of using probe network Yanco from OzNet to explain and demonstrate how the soil water moisture calibration analysis done. 
+For each file submitted in this repository:
+-OzNet_Yanco_calibrated.csv is the calibrated probe data. 1. SLGANorm1_O is the PTF 1 using old SLGA; 2. SLGANorm1_N is the PTF 1 using new SLGA; 3. SLGANorm2_O is the PTF 2 using old SLGA; 4. SLGANorm2_N is the PTF 2 using new SLGA; 5. SLGANorm3 is the PTF 3 using CSIRO 90m DUL_PWP product extraction
+-Probe_Yanco.csv is the site coordinate.
+-Yanco_SM.csv is the un-stretch daily average soil moisture.
+-SoilSLGA_Y.csv is the soil attribute extraction from both old and new SLGA maps.
+-SoilBucket_Y.csv is the calculated DUL and PWP
+-Correlation_Matrix_PTFs_Yanco.xlsx is the correlation summary matrix for each PTFs.
+-Shapefile folder contains the clipped shapefiles for Yanco sites
+-Yanco probes folder contains the raw soil moisture probe data downloaded from OzNet API database
